@@ -1,8 +1,8 @@
 
-import TelegramBot from '@/components/TelegramBot';
+import TelegramBotInterface from '@/components/TelegramBotInterface';
 
 const Index = () => {
-  return <TelegramBot />;
+  return <TelegramBotInterface />;
 };
 
 export default Index;
