@@ -27,39 +27,67 @@ interface TelegramUpdate {
 }
 
 serve(async (req) => {
-  console.log('=== WEBHOOK RECEIVED ===')
+  console.log('=== NEW WEBHOOK REQUEST ===')
+  console.log('Timestamp:', new Date().toISOString())
   console.log('Method:', req.method)
   console.log('URL:', req.url)
+  console.log('Headers:', Object.fromEntries(req.headers.entries()))
 
   if (req.method === 'OPTIONS') {
+    console.log('Handling CORS preflight request')
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    console.log('Creating Supabase client...')
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
-
+    console.log('=== ENVIRONMENT CHECK ===')
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
     const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN')
-    console.log('Bot token exists:', !!botToken)
+    
+    console.log('SUPABASE_URL exists:', !!supabaseUrl)
+    console.log('SUPABASE_SERVICE_ROLE_KEY exists:', !!supabaseKey)
+    console.log('TELEGRAM_BOT_TOKEN exists:', !!botToken)
+    
     if (!botToken) {
-      console.error('TELEGRAM_BOT_TOKEN not set')
-      throw new Error('TELEGRAM_BOT_TOKEN not set')
+      console.error('❌ TELEGRAM_BOT_TOKEN not found in environment')
+      return new Response(JSON.stringify({ 
+        error: 'TELEGRAM_BOT_TOKEN not configured',
+        timestamp: new Date().toISOString()
+      }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
     }
 
-    console.log('Parsing request body...')
-    const update: TelegramUpdate = await req.json()
-    console.log('Update received:', JSON.stringify(update, null, 2))
+    console.log('=== CREATING SUPABASE CLIENT ===')
+    const supabaseClient = createClient(supabaseUrl ?? '', supabaseKey ?? '')
+    console.log('Supabase client created successfully')
+
+    console.log('=== PARSING REQUEST BODY ===')
+    const requestText = await req.text()
+    console.log('Raw request body:', requestText)
+    
+    if (!requestText) {
+      console.log('❌ Empty request body')
+      return new Response('Empty request body', { status: 400, headers: corsHeaders })
+    }
+
+    let update: TelegramUpdate
+    try {
+      update = JSON.parse(requestText)
+      console.log('✅ Successfully parsed JSON:', JSON.stringify(update, null, 2))
+    } catch (parseError) {
+      console.error('❌ JSON parsing error:', parseError)
+      return new Response('Invalid JSON', { status: 400, headers: corsHeaders })
+    }
     
     if (!update.message) {
-      console.log('No message in update')
+      console.log('ℹ️ No message in update, skipping')
       return new Response('No message', { status: 200, headers: corsHeaders })
     }
 
     if (!update.message.text) {
-      console.log('No text in message')
+      console.log('ℹ️ No text in message, skipping')
       return new Response('No message text', { status: 200, headers: corsHeaders })
     }
 
@@ -68,15 +96,15 @@ serve(async (req) => {
     const text = message.text
     const user = message.from
 
-    console.log('Processing message:', {
-      chatId,
-      text,
-      userId: user.id,
-      username: user.username
-    })
+    console.log('=== MESSAGE DETAILS ===')
+    console.log('Chat ID:', chatId)
+    console.log('Message text:', text)
+    console.log('User ID:', user.id)
+    console.log('Username:', user.username)
+    console.log('First name:', user.first_name)
 
-    // Ensure user exists in database
-    console.log('Upserting user...')
+    console.log('=== DATABASE OPERATIONS ===')
+    console.log('Attempting to upsert user...')
     const { error: userError } = await supabaseClient
       .from('telegram_users')
       .upsert({
@@ -89,13 +117,14 @@ serve(async (req) => {
       })
 
     if (userError) {
-      console.error('User upsert error:', userError)
+      console.error('❌ User upsert error:', userError)
     } else {
-      console.log('User upserted successfully')
+      console.log('✅ User upserted successfully')
     }
 
     let responseText = ''
 
+    console.log('=== PROCESSING COMMAND ===')
     if (text.startsWith('/start')) {
       console.log('Processing /start command')
       responseText = `🎫 Welcome to Event Tickets Bot!
@@ -115,11 +144,13 @@ Get started by checking out available events with /events`
         .order('date', { ascending: true })
 
       if (eventsError) {
-        console.error('Events fetch error:', eventsError)
+        console.error('❌ Events fetch error:', eventsError)
         responseText = 'Error fetching events. Please try again.'
       } else if (!events || events.length === 0) {
+        console.log('No events found')
         responseText = 'No events available at the moment.'
       } else {
+        console.log('Found events:', events.length)
         responseText = '🎫 Available Events:\n\n'
         events.forEach((event, index) => {
           const eventDate = new Date(event.date).toLocaleDateString()
@@ -134,6 +165,7 @@ Get started by checking out available events with /events`
     } else if (text.startsWith('/buy_')) {
       console.log('Processing /buy command')
       const eventId = text.replace('/buy_', '')
+      console.log('Event ID:', eventId)
       
       const { data: event } = await supabaseClient
         .from('events')
@@ -142,11 +174,13 @@ Get started by checking out available events with /events`
         .single()
 
       if (!event) {
+        console.log('Event not found for ID:', eventId)
         responseText = 'Event not found.'
       } else if (event.available_tickets <= 0) {
+        console.log('Event sold out:', event.title)
         responseText = 'Sorry, this event is sold out.'
       } else {
-        // Generate ticket code
+        console.log('Processing ticket purchase for event:', event.title)
         const ticketCode = Math.random().toString(36).substring(2, 15).toUpperCase()
         
         const { data: userData } = await supabaseClient
@@ -155,7 +189,6 @@ Get started by checking out available events with /events`
           .eq('telegram_user_id', user.id)
           .single()
 
-        // Create ticket
         const { error } = await supabaseClient
           .from('tickets')
           .insert({
@@ -166,15 +199,15 @@ Get started by checking out available events with /events`
           })
 
         if (error) {
-          console.error('Ticket creation error:', error)
+          console.error('❌ Ticket creation error:', error)
           responseText = 'Error purchasing ticket. Please try again.'
         } else {
-          // Update available tickets
           await supabaseClient
             .from('events')
             .update({ available_tickets: event.available_tickets - 1 })
             .eq('id', eventId)
 
+          console.log('✅ Ticket created successfully:', ticketCode)
           responseText = `✅ Ticket purchased successfully!
 
 🎫 Event: ${event.title}
@@ -208,10 +241,12 @@ Keep your ticket code safe! Use /mytickets to view all your tickets.`
         .order('purchase_date', { ascending: false })
 
       if (!tickets || tickets.length === 0) {
+        console.log('No tickets found for user')
         responseText = `🎫 You don't have any tickets yet.
 
 Use /events to browse available events and purchase tickets!`
       } else {
+        console.log('Found tickets for user:', tickets.length)
         responseText = '🎫 Your Tickets:\n\n'
         tickets.forEach((ticket, index) => {
           const event = ticket.events as any
@@ -239,46 +274,61 @@ To purchase a ticket:
 
 Need support? Contact the event organizers.`
     } else {
-      console.log('Unknown command:', text)
+      console.log('Unknown command received:', text)
       responseText = `❓ Unknown command. Use /help to see available commands.`
     }
 
-    console.log('Sending response to Telegram:', responseText.substring(0, 100) + '...')
+    console.log('=== SENDING TELEGRAM RESPONSE ===')
+    console.log('Response text length:', responseText.length)
+    console.log('Response preview:', responseText.substring(0, 100) + '...')
 
-    // Send response to Telegram
-    const telegramResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    const telegramApiUrl = `https://api.telegram.org/bot${botToken}/sendMessage`
+    console.log('Telegram API URL:', telegramApiUrl.replace(botToken, '[HIDDEN]'))
+
+    const telegramPayload = {
+      chat_id: chatId,
+      text: responseText,
+      parse_mode: 'HTML'
+    }
+    console.log('Telegram payload:', JSON.stringify({...telegramPayload, text: telegramPayload.text.substring(0, 50) + '...'}))
+
+    const telegramResponse = await fetch(telegramApiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: responseText,
-        parse_mode: 'HTML'
-      }),
+      body: JSON.stringify(telegramPayload),
     })
 
     console.log('Telegram API response status:', telegramResponse.status)
+    console.log('Telegram API response headers:', Object.fromEntries(telegramResponse.headers.entries()))
     
     if (!telegramResponse.ok) {
       const errorText = await telegramResponse.text()
-      console.error('Telegram API error:', errorText)
-      throw new Error(`Failed to send message to Telegram: ${errorText}`)
+      console.error('❌ Telegram API error response:', errorText)
+      throw new Error(`Telegram API error (${telegramResponse.status}): ${errorText}`)
     }
 
-    console.log('Message sent successfully')
+    const telegramResponseData = await telegramResponse.text()
+    console.log('✅ Telegram API response:', telegramResponseData)
+
+    console.log('=== WEBHOOK COMPLETED SUCCESSFULLY ===')
     return new Response('OK', { 
       status: 200,
       headers: corsHeaders
     })
 
   } catch (error) {
-    console.error('=== ERROR ===')
-    console.error('Error:', error)
-    console.error('Stack:', error.stack)
+    console.error('=== CRITICAL ERROR ===')
+    console.error('Error type:', error.constructor.name)
+    console.error('Error message:', error.message)
+    console.error('Error stack:', error.stack)
+    console.error('Timestamp:', new Date().toISOString())
+    
     return new Response(JSON.stringify({ 
-      error: error.message,
-      stack: error.stack 
+      error: 'Internal server error',
+      message: error.message,
+      timestamp: new Date().toISOString()
     }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
