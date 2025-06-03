@@ -27,25 +27,40 @@ interface TelegramUpdate {
 }
 
 serve(async (req) => {
+  console.log('=== WEBHOOK RECEIVED ===')
+  console.log('Method:', req.method)
+  console.log('URL:', req.url)
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
+    console.log('Creating Supabase client...')
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
     const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN')
+    console.log('Bot token exists:', !!botToken)
     if (!botToken) {
+      console.error('TELEGRAM_BOT_TOKEN not set')
       throw new Error('TELEGRAM_BOT_TOKEN not set')
     }
 
+    console.log('Parsing request body...')
     const update: TelegramUpdate = await req.json()
+    console.log('Update received:', JSON.stringify(update, null, 2))
     
-    if (!update.message || !update.message.text) {
-      return new Response('No message text', { status: 200 })
+    if (!update.message) {
+      console.log('No message in update')
+      return new Response('No message', { status: 200, headers: corsHeaders })
+    }
+
+    if (!update.message.text) {
+      console.log('No text in message')
+      return new Response('No message text', { status: 200, headers: corsHeaders })
     }
 
     const { message } = update
@@ -53,8 +68,16 @@ serve(async (req) => {
     const text = message.text
     const user = message.from
 
+    console.log('Processing message:', {
+      chatId,
+      text,
+      userId: user.id,
+      username: user.username
+    })
+
     // Ensure user exists in database
-    await supabaseClient
+    console.log('Upserting user...')
+    const { error: userError } = await supabaseClient
       .from('telegram_users')
       .upsert({
         telegram_user_id: user.id,
@@ -65,9 +88,16 @@ serve(async (req) => {
         onConflict: 'telegram_user_id'
       })
 
+    if (userError) {
+      console.error('User upsert error:', userError)
+    } else {
+      console.log('User upserted successfully')
+    }
+
     let responseText = ''
 
     if (text.startsWith('/start')) {
+      console.log('Processing /start command')
       responseText = `🎫 Welcome to Event Tickets Bot!
 
 Available commands:
@@ -77,13 +107,17 @@ Available commands:
 
 Get started by checking out available events with /events`
     } else if (text.startsWith('/events')) {
-      const { data: events } = await supabaseClient
+      console.log('Processing /events command')
+      const { data: events, error: eventsError } = await supabaseClient
         .from('events')
         .select('*')
         .gt('available_tickets', 0)
         .order('date', { ascending: true })
 
-      if (!events || events.length === 0) {
+      if (eventsError) {
+        console.error('Events fetch error:', eventsError)
+        responseText = 'Error fetching events. Please try again.'
+      } else if (!events || events.length === 0) {
         responseText = 'No events available at the moment.'
       } else {
         responseText = '🎫 Available Events:\n\n'
@@ -98,6 +132,7 @@ Get started by checking out available events with /events`
         })
       }
     } else if (text.startsWith('/buy_')) {
+      console.log('Processing /buy command')
       const eventId = text.replace('/buy_', '')
       
       const { data: event } = await supabaseClient
@@ -131,6 +166,7 @@ Get started by checking out available events with /events`
           })
 
         if (error) {
+          console.error('Ticket creation error:', error)
           responseText = 'Error purchasing ticket. Please try again.'
         } else {
           // Update available tickets
@@ -151,6 +187,7 @@ Keep your ticket code safe! Use /mytickets to view all your tickets.`
         }
       }
     } else if (text.startsWith('/mytickets')) {
+      console.log('Processing /mytickets command')
       const { data: userData } = await supabaseClient
         .from('telegram_users')
         .select('id')
@@ -186,6 +223,7 @@ Use /events to browse available events and purchase tickets!`
         })
       }
     } else if (text.startsWith('/help')) {
+      console.log('Processing /help command')
       responseText = `🎫 Event Tickets Bot Help
 
 Available commands:
@@ -201,8 +239,11 @@ To purchase a ticket:
 
 Need support? Contact the event organizers.`
     } else {
+      console.log('Unknown command:', text)
       responseText = `❓ Unknown command. Use /help to see available commands.`
     }
+
+    console.log('Sending response to Telegram:', responseText.substring(0, 100) + '...')
 
     // Send response to Telegram
     const telegramResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -217,18 +258,28 @@ Need support? Contact the event organizers.`
       }),
     })
 
+    console.log('Telegram API response status:', telegramResponse.status)
+    
     if (!telegramResponse.ok) {
-      throw new Error('Failed to send message to Telegram')
+      const errorText = await telegramResponse.text()
+      console.error('Telegram API error:', errorText)
+      throw new Error(`Failed to send message to Telegram: ${errorText}`)
     }
 
+    console.log('Message sent successfully')
     return new Response('OK', { 
       status: 200,
       headers: corsHeaders
     })
 
   } catch (error) {
+    console.error('=== ERROR ===')
     console.error('Error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    console.error('Stack:', error.stack)
+    return new Response(JSON.stringify({ 
+      error: error.message,
+      stack: error.stack 
+    }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
