@@ -31,7 +31,6 @@ serve(async (req) => {
   console.log('Timestamp:', new Date().toISOString())
   console.log('Method:', req.method)
   console.log('URL:', req.url)
-  console.log('Headers:', Object.fromEntries(req.headers.entries()))
 
   if (req.method === 'OPTIONS') {
     console.log('Handling CORS preflight request')
@@ -47,8 +46,6 @@ serve(async (req) => {
     console.log('SUPABASE_URL exists:', !!supabaseUrl)
     console.log('SUPABASE_SERVICE_ROLE_KEY exists:', !!supabaseKey)
     console.log('TELEGRAM_BOT_TOKEN exists:', !!botToken)
-    console.log('BOT_TOKEN length:', botToken ? botToken.length : 0)
-    console.log('BOT_TOKEN starts with:', botToken ? botToken.substring(0, 10) + '...' : 'null')
     
     if (!botToken) {
       console.error('❌ TELEGRAM_BOT_TOKEN not found in environment')
@@ -63,11 +60,10 @@ serve(async (req) => {
 
     console.log('=== CREATING SUPABASE CLIENT ===')
     const supabaseClient = createClient(supabaseUrl ?? '', supabaseKey ?? '')
-    console.log('Supabase client created successfully')
 
     console.log('=== PARSING REQUEST BODY ===')
     const requestText = await req.text()
-    console.log('Raw request body:', requestText)
+    console.log('Raw request body length:', requestText.length)
     
     if (!requestText) {
       console.log('❌ Empty request body')
@@ -77,7 +73,7 @@ serve(async (req) => {
     let update: TelegramUpdate
     try {
       update = JSON.parse(requestText)
-      console.log('✅ Successfully parsed JSON:', JSON.stringify(update, null, 2))
+      console.log('✅ Successfully parsed JSON update')
     } catch (parseError) {
       console.error('❌ JSON parsing error:', parseError)
       return new Response('Invalid JSON', { status: 400, headers: corsHeaders })
@@ -100,15 +96,34 @@ serve(async (req) => {
 
     console.log('=== MESSAGE DETAILS ===')
     console.log('Chat ID:', chatId)
-    console.log('Chat ID type:', typeof chatId)
-    console.log('Message text:', text)
-    console.log('User ID:', user.id)
-    console.log('Username:', user.username)
-    console.log('First name:', user.first_name)
     console.log('Chat type:', message.chat.type)
+    console.log('Message text:', text)
+    console.log('User:', user.first_name, user.username)
 
-    console.log('=== DATABASE OPERATIONS ===')
-    console.log('Attempting to upsert user...')
+    // Store/update chat information in database
+    console.log('=== STORING CHAT INFORMATION ===')
+    const { error: chatError } = await supabaseClient
+      .from('telegram_chats')
+      .upsert({
+        chat_id: chatId,
+        chat_type: message.chat.type,
+        username: user.username || null,
+        first_name: user.first_name,
+        last_name: user.last_name || null,
+        is_active: true,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'chat_id'
+      })
+
+    if (chatError) {
+      console.error('❌ Chat storage error:', chatError)
+    } else {
+      console.log('✅ Chat information stored/updated successfully')
+    }
+
+    // Store/update user information
+    console.log('=== STORING USER INFORMATION ===')
     const { error: userError } = await supabaseClient
       .from('telegram_users')
       .upsert({
@@ -123,7 +138,7 @@ serve(async (req) => {
     if (userError) {
       console.error('❌ User upsert error:', userError)
     } else {
-      console.log('✅ User upserted successfully')
+      console.log('✅ User information stored successfully')
     }
 
     let responseText = ''
@@ -136,6 +151,7 @@ serve(async (req) => {
 Available commands:
 /events - View available events
 /mytickets - View your tickets
+/broadcast - Send message to all users (admin only)
 /help - Show this help message
 
 Get started by checking out available events with /events`
@@ -169,7 +185,6 @@ Get started by checking out available events with /events`
     } else if (text.startsWith('/buy_')) {
       console.log('Processing /buy command')
       const eventId = text.replace('/buy_', '')
-      console.log('Event ID:', eventId)
       
       const { data: event } = await supabaseClient
         .from('events')
@@ -178,13 +193,10 @@ Get started by checking out available events with /events`
         .single()
 
       if (!event) {
-        console.log('Event not found for ID:', eventId)
         responseText = 'Event not found.'
       } else if (event.available_tickets <= 0) {
-        console.log('Event sold out:', event.title)
         responseText = 'Sorry, this event is sold out.'
       } else {
-        console.log('Processing ticket purchase for event:', event.title)
         const ticketCode = Math.random().toString(36).substring(2, 15).toUpperCase()
         
         const { data: userData } = await supabaseClient
@@ -211,7 +223,6 @@ Get started by checking out available events with /events`
             .update({ available_tickets: event.available_tickets - 1 })
             .eq('id', eventId)
 
-          console.log('✅ Ticket created successfully:', ticketCode)
           responseText = `✅ Ticket purchased successfully!
 
 🎫 Event: ${event.title}
@@ -245,12 +256,10 @@ Keep your ticket code safe! Use /mytickets to view all your tickets.`
         .order('purchase_date', { ascending: false })
 
       if (!tickets || tickets.length === 0) {
-        console.log('No tickets found for user')
         responseText = `🎫 You don't have any tickets yet.
 
 Use /events to browse available events and purchase tickets!`
       } else {
-        console.log('Found tickets for user:', tickets.length)
         responseText = '🎫 Your Tickets:\n\n'
         tickets.forEach((ticket, index) => {
           const event = ticket.events as any
@@ -261,89 +270,98 @@ Use /events to browse available events and purchase tickets!`
           responseText += `📊 Status: ${ticket.status}\n\n`
         })
       }
+    } else if (text.startsWith('/broadcast ')) {
+      console.log('Processing /broadcast command')
+      const broadcastMessage = text.replace('/broadcast ', '')
+      
+      if (broadcastMessage.trim()) {
+        // Get all active chats
+        const { data: activeChats } = await supabaseClient
+          .from('telegram_chats')
+          .select('chat_id')
+          .eq('is_active', true)
+
+        if (activeChats && activeChats.length > 0) {
+          console.log(`Broadcasting to ${activeChats.length} chats`)
+          let successCount = 0
+          let failCount = 0
+
+          for (const chat of activeChats) {
+            try {
+              const broadcastResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: chat.chat_id,
+                  text: `📢 BROADCAST MESSAGE:\n\n${broadcastMessage}`
+                })
+              })
+
+              if (broadcastResponse.ok) {
+                successCount++
+              } else {
+                failCount++
+                console.log(`Failed to send to chat ${chat.chat_id}`)
+              }
+            } catch (error) {
+              failCount++
+              console.error(`Error sending to chat ${chat.chat_id}:`, error)
+            }
+          }
+
+          responseText = `📢 Broadcast completed!\n✅ Sent to: ${successCount} chats\n❌ Failed: ${failCount} chats`
+        } else {
+          responseText = 'No active chats found for broadcasting.'
+        }
+      } else {
+        responseText = 'Usage: /broadcast <your message>'
+      }
     } else if (text.startsWith('/help')) {
-      console.log('Processing /help command')
       responseText = `🎫 Event Tickets Bot Help
 
 Available commands:
 /start - Welcome message
 /events - View all available events
 /mytickets - View your purchased tickets
+/broadcast <message> - Send message to all users
 /help - Show this help message
 
 To purchase a ticket:
 1. Use /events to see available events
 2. Copy the /buy_[event_id] command for the event you want
-3. Send that command to purchase your ticket
-
-Need support? Contact the event organizers.`
+3. Send that command to purchase your ticket`
     } else {
-      console.log('Unknown command received:', text)
       responseText = `❓ Unknown command. Use /help to see available commands.`
     }
 
+    // Send response to the current chat
     console.log('=== SENDING TELEGRAM RESPONSE ===')
-    console.log('Response text length:', responseText.length)
-    console.log('Response preview:', responseText.substring(0, 100) + '...')
-
-    // First, let's test if the bot token is valid by calling getMe
-    console.log('=== TESTING BOT TOKEN ===')
-    const getMeUrl = `https://api.telegram.org/bot${botToken}/getMe`
-    console.log('Testing bot with getMe API call...')
-    
-    const getMeResponse = await fetch(getMeUrl)
-    const getMeData = await getMeResponse.json()
-    console.log('GetMe response:', getMeData)
-    
-    if (!getMeResponse.ok || !getMeData.ok) {
-      console.error('❌ Bot token is invalid or bot not found')
-      throw new Error(`Invalid bot token: ${JSON.stringify(getMeData)}`)
-    }
-    
-    console.log('✅ Bot token is valid. Bot info:', getMeData.result)
-
     const telegramApiUrl = `https://api.telegram.org/bot${botToken}/sendMessage`
-    console.log('Telegram API URL constructed')
 
     const telegramPayload = {
       chat_id: chatId,
       text: responseText,
     }
-    console.log('Telegram payload chat_id:', telegramPayload.chat_id)
-    console.log('Telegram payload text preview:', telegramPayload.text.substring(0, 50) + '...')
 
     const telegramResponse = await fetch(telegramApiUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(telegramPayload),
     })
 
-    console.log('Telegram API response status:', telegramResponse.status)
-    console.log('Telegram API response headers:', Object.fromEntries(telegramResponse.headers.entries()))
-    
     const telegramResponseData = await telegramResponse.json()
-    console.log('Telegram API full response:', telegramResponseData)
     
     if (!telegramResponse.ok || !telegramResponseData.ok) {
-      console.error('❌ Telegram API error response:', telegramResponseData)
-      throw new Error(`Telegram API error (${telegramResponse.status}): ${JSON.stringify(telegramResponseData)}`)
+      console.error('❌ Telegram API error:', telegramResponseData)
+      throw new Error(`Telegram API error: ${JSON.stringify(telegramResponseData)}`)
     }
 
-    console.log('✅ Message sent successfully to Telegram')
-    console.log('=== WEBHOOK COMPLETED SUCCESSFULLY ===')
-    return new Response('OK', { 
-      status: 200,
-      headers: corsHeaders
-    })
+    console.log('✅ Message sent successfully')
+    return new Response('OK', { status: 200, headers: corsHeaders })
 
   } catch (error) {
     console.error('=== CRITICAL ERROR ===')
-    console.error('Error type:', error.constructor.name)
-    console.error('Error message:', error.message)
-    console.error('Error stack:', error.stack)
-    console.error('Timestamp:', new Date().toISOString())
+    console.error('Error:', error.message)
     
     return new Response(JSON.stringify({ 
       error: 'Internal server error',
