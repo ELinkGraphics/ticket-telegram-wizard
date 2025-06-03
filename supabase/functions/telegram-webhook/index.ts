@@ -47,6 +47,8 @@ serve(async (req) => {
     console.log('SUPABASE_URL exists:', !!supabaseUrl)
     console.log('SUPABASE_SERVICE_ROLE_KEY exists:', !!supabaseKey)
     console.log('TELEGRAM_BOT_TOKEN exists:', !!botToken)
+    console.log('BOT_TOKEN length:', botToken ? botToken.length : 0)
+    console.log('BOT_TOKEN starts with:', botToken ? botToken.substring(0, 10) + '...' : 'null')
     
     if (!botToken) {
       console.error('❌ TELEGRAM_BOT_TOKEN not found in environment')
@@ -98,10 +100,12 @@ serve(async (req) => {
 
     console.log('=== MESSAGE DETAILS ===')
     console.log('Chat ID:', chatId)
+    console.log('Chat ID type:', typeof chatId)
     console.log('Message text:', text)
     console.log('User ID:', user.id)
     console.log('Username:', user.username)
     console.log('First name:', user.first_name)
+    console.log('Chat type:', message.chat.type)
 
     console.log('=== DATABASE OPERATIONS ===')
     console.log('Attempting to upsert user...')
@@ -282,15 +286,31 @@ Need support? Contact the event organizers.`
     console.log('Response text length:', responseText.length)
     console.log('Response preview:', responseText.substring(0, 100) + '...')
 
+    // First, let's test if the bot token is valid by calling getMe
+    console.log('=== TESTING BOT TOKEN ===')
+    const getMeUrl = `https://api.telegram.org/bot${botToken}/getMe`
+    console.log('Testing bot with getMe API call...')
+    
+    const getMeResponse = await fetch(getMeUrl)
+    const getMeData = await getMeResponse.json()
+    console.log('GetMe response:', getMeData)
+    
+    if (!getMeResponse.ok || !getMeData.ok) {
+      console.error('❌ Bot token is invalid or bot not found')
+      throw new Error(`Invalid bot token: ${JSON.stringify(getMeData)}`)
+    }
+    
+    console.log('✅ Bot token is valid. Bot info:', getMeData.result)
+
     const telegramApiUrl = `https://api.telegram.org/bot${botToken}/sendMessage`
-    console.log('Telegram API URL:', telegramApiUrl.replace(botToken, '[HIDDEN]'))
+    console.log('Telegram API URL constructed')
 
     const telegramPayload = {
       chat_id: chatId,
       text: responseText,
-      parse_mode: 'HTML'
     }
-    console.log('Telegram payload:', JSON.stringify({...telegramPayload, text: telegramPayload.text.substring(0, 50) + '...'}))
+    console.log('Telegram payload chat_id:', telegramPayload.chat_id)
+    console.log('Telegram payload text preview:', telegramPayload.text.substring(0, 50) + '...')
 
     const telegramResponse = await fetch(telegramApiUrl, {
       method: 'POST',
@@ -303,15 +323,15 @@ Need support? Contact the event organizers.`
     console.log('Telegram API response status:', telegramResponse.status)
     console.log('Telegram API response headers:', Object.fromEntries(telegramResponse.headers.entries()))
     
-    if (!telegramResponse.ok) {
-      const errorText = await telegramResponse.text()
-      console.error('❌ Telegram API error response:', errorText)
-      throw new Error(`Telegram API error (${telegramResponse.status}): ${errorText}`)
+    const telegramResponseData = await telegramResponse.json()
+    console.log('Telegram API full response:', telegramResponseData)
+    
+    if (!telegramResponse.ok || !telegramResponseData.ok) {
+      console.error('❌ Telegram API error response:', telegramResponseData)
+      throw new Error(`Telegram API error (${telegramResponse.status}): ${JSON.stringify(telegramResponseData)}`)
     }
 
-    const telegramResponseData = await telegramResponse.text()
-    console.log('✅ Telegram API response:', telegramResponseData)
-
+    console.log('✅ Message sent successfully to Telegram')
     console.log('=== WEBHOOK COMPLETED SUCCESSFULLY ===')
     return new Response('OK', { 
       status: 200,
