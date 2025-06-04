@@ -3,13 +3,14 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, CheckCircle, Settings, ExternalLink } from 'lucide-react';
+import { AlertCircle, CheckCircle, Settings, ExternalLink, RefreshCw } from 'lucide-react';
 
 const WebhookSetup = () => {
   const [webhookStatus, setWebhookStatus] = useState<'checking' | 'configured' | 'not-configured' | 'error'>('checking');
   const [botInfo, setBotInfo] = useState<any>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [isConfiguring, setIsConfiguring] = useState(false);
+  const [isActivating, setIsActivating] = useState(false);
 
   const webhookUrl = 'https://jxfvuhvnqgvilyskehmg.supabase.co/functions/v1/telegram-webhook';
 
@@ -40,6 +41,36 @@ const WebhookSetup = () => {
     } catch (error) {
       setWebhookStatus('error');
       setErrorMessage(error instanceof Error ? error.message : 'Unknown error');
+    }
+  };
+
+  const activateBot = async () => {
+    setIsActivating(true);
+    try {
+      const response = await fetch('https://jxfvuhvnqgvilyskehmg.supabase.co/functions/v1/telegram-webhook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4ZnZ1aHZucWd2aWx5c2tlaG1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcyMjY1NTEsImV4cCI6MjA2MjgwMjU1MX0.0GSW69tNPMPu-kXN12vljhITFUrv0I8t7dp7BTBdH28`
+        },
+        body: JSON.stringify({
+          action: 'activate_bot'
+        })
+      });
+
+      const result = await response.json();
+      
+      if (response.ok && result.success) {
+        setErrorMessage('');
+        // Refresh bot info after activation
+        setTimeout(checkBotInfo, 1000);
+      } else {
+        setErrorMessage(result.error || 'Failed to activate bot');
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setIsActivating(false);
     }
   };
 
@@ -92,6 +123,17 @@ const WebhookSetup = () => {
     }
   };
 
+  const getBotStatusBadge = () => {
+    if (!botInfo) return null;
+    
+    const isActive = botInfo.can_receive_updates;
+    return (
+      <Badge className={isActive ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}>
+        {isActive ? 'Active' : 'Inactive'}
+      </Badge>
+    );
+  };
+
   return (
     <Card className="mb-6 border-2 border-purple-200">
       <CardHeader>
@@ -104,12 +146,25 @@ const WebhookSetup = () => {
       <CardContent className="space-y-4">
         {botInfo && (
           <div className="p-3 bg-blue-50 border border-blue-200 rounded">
-            <h4 className="font-medium text-blue-800 mb-2">Bot Information</h4>
+            <h4 className="font-medium text-blue-800 mb-2 flex items-center gap-2">
+              Bot Information
+              {getBotStatusBadge()}
+            </h4>
             <div className="text-sm space-y-1">
               <p><strong>Bot Name:</strong> {botInfo.first_name}</p>
               <p><strong>Username:</strong> @{botInfo.username}</p>
               <p><strong>Bot ID:</strong> {botInfo.id}</p>
-              <p><strong>Status:</strong> {botInfo.can_receive_updates ? 'Active' : 'Inactive'}</p>
+              <p><strong>Can Receive Updates:</strong> {botInfo.can_receive_updates ? 'Yes' : 'No'}</p>
+              {!botInfo.can_receive_updates && (
+                <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-yellow-800">
+                  <p className="text-xs">⚠️ Bot appears inactive. This might be due to:</p>
+                  <ul className="text-xs mt-1 list-disc list-inside">
+                    <li>Bot token issues</li>
+                    <li>Bot not started by BotFather</li>
+                    <li>Webhook not properly configured</li>
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -139,8 +194,21 @@ const WebhookSetup = () => {
             size="sm"
             disabled={webhookStatus === 'checking'}
           >
-            {webhookStatus === 'checking' ? 'Checking...' : 'Check Status'}
+            <RefreshCw className={`w-4 h-4 mr-2 ${webhookStatus === 'checking' ? 'animate-spin' : ''}`} />
+            {webhookStatus === 'checking' ? 'Checking...' : 'Refresh Status'}
           </Button>
+
+          {botInfo && !botInfo.can_receive_updates && (
+            <Button 
+              onClick={activateBot}
+              variant="default"
+              size="sm"
+              disabled={isActivating}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              {isActivating ? 'Activating...' : 'Activate Bot'}
+            </Button>
+          )}
           
           {webhookStatus === 'not-configured' && (
             <Button 
@@ -165,11 +233,11 @@ const WebhookSetup = () => {
           )}
         </div>
 
-        {webhookStatus === 'configured' && (
+        {webhookStatus === 'configured' && botInfo?.can_receive_updates && (
           <div className="p-3 bg-green-50 border border-green-200 rounded">
             <div className="flex items-center gap-2 text-green-700">
               <CheckCircle className="w-4 h-4" />
-              <span className="text-sm font-medium">Webhook is properly configured!</span>
+              <span className="text-sm font-medium">Bot is active and webhook is configured!</span>
             </div>
             <p className="text-xs text-green-600 mt-1">
               Your bot should now respond to commands sent directly in Telegram.
@@ -178,11 +246,12 @@ const WebhookSetup = () => {
         )}
 
         <div className="text-xs text-gray-500 space-y-1">
-          <p><strong>Setup Instructions:</strong></p>
-          <p>1. Click "Check Status" to verify bot connection</p>
-          <p>2. If webhook is not configured, click "Configure Webhook"</p>
-          <p>3. Test by sending /start to your bot in Telegram</p>
-          <p>4. Bot should respond immediately with the welcome message</p>
+          <p><strong>Activation Steps:</strong></p>
+          <p>1. Click "Refresh Status" to check current bot state</p>
+          <p>2. If bot is inactive, click "Activate Bot"</p>
+          <p>3. If webhook is not configured, click "Configure Webhook"</p>
+          <p>4. Test by sending /start to your bot in Telegram</p>
+          <p>5. Bot should respond immediately with the welcome message</p>
         </div>
 
         <div className="pt-2 border-t">

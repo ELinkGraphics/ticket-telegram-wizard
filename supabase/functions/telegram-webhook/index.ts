@@ -1,4 +1,3 @@
-
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -300,6 +299,28 @@ const setWebhook = async (botToken: string, webhookUrl: string) => {
   return await response.json()
 }
 
+const activateBot = async (botToken: string) => {
+  // Try to get updates to activate the bot
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      limit: 1,
+      timeout: 0
+    })
+  })
+  
+  const result = await response.json()
+  
+  if (result.ok) {
+    // Also try to delete webhook and set it again to ensure proper activation
+    await fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook`)
+    return { ok: true, description: 'Bot activation attempted' }
+  }
+  
+  return result
+}
+
 serve(async (req) => {
   console.log('=== NEW WEBHOOK REQUEST ===')
   console.log('Timestamp:', new Date().toISOString())
@@ -376,6 +397,28 @@ serve(async (req) => {
             return new Response(JSON.stringify({
               success: false,
               error: botInfo.description || 'Failed to get bot info'
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            })
+          }
+        }
+        
+        if (requestData.action === 'activate_bot') {
+          const result = await activateBot(botToken)
+          
+          if (result.ok) {
+            return new Response(JSON.stringify({
+              success: true,
+              message: 'Bot activation attempted successfully'
+            }), {
+              status: 200,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            })
+          } else {
+            return new Response(JSON.stringify({
+              success: false,
+              error: result.description || 'Failed to activate bot'
             }), {
               status: 400,
               headers: { ...corsHeaders, 'Content-Type': 'application/json' }
