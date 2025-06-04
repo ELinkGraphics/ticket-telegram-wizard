@@ -4,16 +4,48 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { AlertCircle, CheckCircle, RefreshCw, MessageCircle } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
 
 const WebhookDebugger = () => {
   const [webhookStatus, setWebhookStatus] = useState<'checking' | 'active' | 'error'>('checking');
   const [lastUpdate, setLastUpdate] = useState<string>('Never');
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [availableChats, setAvailableChats] = useState<any[]>([]);
+  const [selectedChatId, setSelectedChatId] = useState<string>('');
+
+  const fetchAvailableChats = async () => {
+    try {
+      const { data: chats, error } = await supabase
+        .from('telegram_chats')
+        .select('chat_id, username, first_name, last_name')
+        .eq('is_active', true)
+        .order('updated_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching chats:', error);
+        return;
+      }
+
+      setAvailableChats(chats || []);
+      if (chats && chats.length > 0 && !selectedChatId) {
+        setSelectedChatId(chats[0].chat_id.toString());
+      }
+    } catch (error) {
+      console.error('Error fetching chats:', error);
+    }
+  };
 
   const checkWebhookStatus = async () => {
     setWebhookStatus('checking');
+    
+    if (!selectedChatId) {
+      setWebhookStatus('error');
+      setErrorMessage('No chat ID available. Please start a conversation with the bot first.');
+      return;
+    }
+
     try {
-      // Test the webhook endpoint
+      // Test the webhook endpoint with a real chat ID
       const response = await fetch('https://jxfvuhvnqgvilyskehmg.supabase.co/functions/v1/telegram-webhook', {
         method: 'POST',
         headers: {
@@ -21,19 +53,19 @@ const WebhookDebugger = () => {
           'Authorization': `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4ZnZ1aHZucWd2aWx5c2tlaG1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcyMjY1NTEsImV4cCI6MjA2MjgwMjU1MX0.0GSW69tNPMPu-kXN12vljhITFUrv0I8t7dp7BTBdH28`
         },
         body: JSON.stringify({
-          update_id: 1,
+          update_id: Date.now(),
           message: {
-            message_id: 1,
+            message_id: Date.now(),
             from: {
-              id: 123456789,
+              id: parseInt(selectedChatId),
               first_name: "Test",
-              username: "testuser"
+              username: "debugger"
             },
             chat: {
-              id: 123456789,
+              id: parseInt(selectedChatId),
               type: "private"
             },
-            text: "/start",
+            text: "/help",
             date: Math.floor(Date.now() / 1000)
           }
         })
@@ -54,9 +86,59 @@ const WebhookDebugger = () => {
     }
   };
 
+  const sendTestCommand = async (command: string) => {
+    if (!selectedChatId) {
+      setErrorMessage('No chat ID selected');
+      return;
+    }
+
+    try {
+      const response = await fetch('https://jxfvuhvnqgvilyskehmg.supabase.co/functions/v1/telegram-webhook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4ZnZ1aHZucWd2aWx5c2tlaG1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcyMjY1NTEsImV4cCI6MjA2MjgwMjU1MX0.0GSW69tNPMPu-kXN12vljhITFUrv0I8t7dp7BTBdH28`
+        },
+        body: JSON.stringify({
+          update_id: Date.now(),
+          message: {
+            message_id: Date.now(),
+            from: {
+              id: parseInt(selectedChatId),
+              first_name: "Debugger",
+              username: "debugger"
+            },
+            chat: {
+              id: parseInt(selectedChatId),
+              type: "private"
+            },
+            text: command,
+            date: Math.floor(Date.now() / 1000)
+          }
+        })
+      });
+
+      if (response.ok) {
+        setLastUpdate(new Date().toLocaleTimeString());
+        setErrorMessage('');
+      } else {
+        const errorText = await response.text();
+        setErrorMessage(`Command failed: ${errorText}`);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unknown error');
+    }
+  };
+
   useEffect(() => {
-    checkWebhookStatus();
+    fetchAvailableChats();
   }, []);
+
+  useEffect(() => {
+    if (selectedChatId) {
+      checkWebhookStatus();
+    }
+  }, [selectedChatId]);
 
   return (
     <Card className="mb-6 border-2 border-blue-200">
@@ -83,6 +165,23 @@ const WebhookDebugger = () => {
             Webhook URL: https://jxfvuhvnqgvilyskehmg.supabase.co/functions/v1/telegram-webhook
           </span>
         </div>
+
+        {availableChats.length > 0 && (
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Select Chat for Testing:</label>
+            <select 
+              value={selectedChatId} 
+              onChange={(e) => setSelectedChatId(e.target.value)}
+              className="w-full p-2 border rounded text-sm"
+            >
+              {availableChats.map((chat) => (
+                <option key={chat.chat_id} value={chat.chat_id}>
+                  {chat.first_name} {chat.last_name} (@{chat.username || 'no username'}) - ID: {chat.chat_id}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         
         <div className="text-sm text-gray-600">
           <strong>Last Test:</strong> {lastUpdate}
@@ -95,23 +194,61 @@ const WebhookDebugger = () => {
         )}
 
         <div className="space-y-2">
+          <div className="flex gap-2 flex-wrap">
+            <Button 
+              onClick={checkWebhookStatus}
+              variant="outline"
+              size="sm"
+              disabled={webhookStatus === 'checking' || !selectedChatId}
+            >
+              <RefreshCw className={`w-4 h-4 mr-2 ${webhookStatus === 'checking' ? 'animate-spin' : ''}`} />
+              Test Webhook
+            </Button>
+            
+            <Button 
+              onClick={() => sendTestCommand('/start')}
+              variant="outline"
+              size="sm"
+              disabled={!selectedChatId}
+            >
+              Test /start
+            </Button>
+            
+            <Button 
+              onClick={() => sendTestCommand('/events')}
+              variant="outline"
+              size="sm"
+              disabled={!selectedChatId}
+            >
+              Test /events
+            </Button>
+            
+            <Button 
+              onClick={() => sendTestCommand('/mytickets')}
+              variant="outline"
+              size="sm"
+              disabled={!selectedChatId}
+            >
+              Test /mytickets
+            </Button>
+          </div>
+          
           <Button 
-            onClick={checkWebhookStatus}
-            variant="outline"
+            onClick={fetchAvailableChats}
+            variant="ghost"
             size="sm"
-            disabled={webhookStatus === 'checking'}
           >
-            <RefreshCw className={`w-4 h-4 mr-2 ${webhookStatus === 'checking' ? 'animate-spin' : ''}`} />
-            Test Webhook
+            Refresh Chat List
           </Button>
         </div>
 
         <div className="text-xs text-gray-500 space-y-1">
           <p><strong>Debug Steps:</strong></p>
-          <p>1. Check that TELEGRAM_BOT_TOKEN is set in Supabase secrets</p>
-          <p>2. Verify webhook URL is set in Telegram: /setWebhook</p>
-          <p>3. Send /start to your bot and check Edge Function logs</p>
-          <p>4. Look for any error messages in the console</p>
+          <p>1. Start a conversation with your bot on Telegram</p>
+          <p>2. Send /start to register your chat ID</p>
+          <p>3. Select your chat from the dropdown above</p>
+          <p>4. Use the test buttons to simulate commands</p>
+          <p>5. Check Edge Function logs for detailed debugging</p>
         </div>
       </CardContent>
     </Card>

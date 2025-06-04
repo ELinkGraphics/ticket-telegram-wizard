@@ -26,11 +26,266 @@ interface TelegramUpdate {
   }
 }
 
+interface TelegramUser {
+  id: number
+  first_name: string
+  last_name?: string
+  username?: string
+}
+
+interface TelegramChat {
+  id: number
+  type: string
+}
+
+// Command handlers
+const handleStartCommand = (user: TelegramUser) => {
+  return `🎫 Welcome to Event Tickets Bot, ${user.first_name}!
+
+Available commands:
+/events - View available events
+/mytickets - View your tickets
+/broadcast - Send message to all users (admin only)
+/help - Show this help message
+
+Get started by checking out available events with /events`
+}
+
+const handleHelpCommand = () => {
+  return `🎫 Event Tickets Bot Help
+
+Available commands:
+/start - Welcome message
+/events - View all available events
+/mytickets - View your purchased tickets
+/broadcast <message> - Send message to all users
+/help - Show this help message
+
+To purchase a ticket:
+1. Use /events to see available events
+2. Copy the /buy_[event_id] command for the event you want
+3. Send that command to purchase your ticket`
+}
+
+const handleEventsCommand = async (supabaseClient: any) => {
+  console.log('Fetching events from database...')
+  const { data: events, error: eventsError } = await supabaseClient
+    .from('events')
+    .select('*')
+    .gt('available_tickets', 0)
+    .order('date', { ascending: true })
+
+  if (eventsError) {
+    console.error('❌ Events fetch error:', eventsError)
+    return 'Error fetching events. Please try again.'
+  }
+  
+  if (!events || events.length === 0) {
+    console.log('No events found')
+    return 'No events available at the moment.'
+  }
+
+  console.log('Found events:', events.length)
+  let responseText = '🎫 Available Events:\n\n'
+  events.forEach((event, index) => {
+    const eventDate = new Date(event.date).toLocaleDateString()
+    responseText += `${index + 1}. ${event.title}\n`
+    responseText += `📅 ${eventDate}\n`
+    responseText += `📍 ${event.location}\n`
+    responseText += `💰 $${event.price}\n`
+    responseText += `🎟️ ${event.available_tickets} tickets available\n`
+    responseText += `\nTo buy: /buy_${event.id}\n\n`
+  })
+  
+  return responseText
+}
+
+const handleMyTicketsCommand = async (supabaseClient: any, userId: number) => {
+  console.log('Fetching user tickets...')
+  const { data: userData } = await supabaseClient
+    .from('telegram_users')
+    .select('id')
+    .eq('telegram_user_id', userId)
+    .single()
+
+  if (!userData) {
+    return 'Please start a conversation with the bot first using /start'
+  }
+
+  const { data: tickets } = await supabaseClient
+    .from('tickets')
+    .select(`
+      *,
+      events (
+        title,
+        date,
+        location
+      )
+    `)
+    .eq('user_id', userData.id)
+    .order('purchase_date', { ascending: false })
+
+  if (!tickets || tickets.length === 0) {
+    return `🎫 You don't have any tickets yet.
+
+Use /events to browse available events and purchase tickets!`
+  }
+
+  let responseText = '🎫 Your Tickets:\n\n'
+  tickets.forEach((ticket, index) => {
+    const event = ticket.events as any
+    responseText += `${index + 1}. ${event.title}\n`
+    responseText += `🏷️ Code: ${ticket.ticket_code}\n`
+    responseText += `📅 ${new Date(event.date).toLocaleDateString()}\n`
+    responseText += `📍 ${event.location}\n`
+    responseText += `📊 Status: ${ticket.status}\n\n`
+  })
+
+  return responseText
+}
+
+const handleBuyCommand = async (supabaseClient: any, eventId: string, userId: number) => {
+  console.log('Processing ticket purchase for event:', eventId)
+  
+  const { data: event } = await supabaseClient
+    .from('events')
+    .select('*')
+    .eq('id', eventId)
+    .single()
+
+  if (!event) {
+    return 'Event not found.'
+  }
+  
+  if (event.available_tickets <= 0) {
+    return 'Sorry, this event is sold out.'
+  }
+
+  const ticketCode = Math.random().toString(36).substring(2, 15).toUpperCase()
+  
+  const { data: userData } = await supabaseClient
+    .from('telegram_users')
+    .select('id')
+    .eq('telegram_user_id', userId)
+    .single()
+
+  if (!userData) {
+    return 'Please start a conversation with the bot first using /start'
+  }
+
+  const { error } = await supabaseClient
+    .from('tickets')
+    .insert({
+      user_id: userData.id,
+      event_id: eventId,
+      ticket_code: ticketCode,
+      status: 'active'
+    })
+
+  if (error) {
+    console.error('❌ Ticket creation error:', error)
+    return 'Error purchasing ticket. Please try again.'
+  }
+
+  await supabaseClient
+    .from('events')
+    .update({ available_tickets: event.available_tickets - 1 })
+    .eq('id', eventId)
+
+  return `✅ Ticket purchased successfully!
+
+🎫 Event: ${event.title}
+🏷️ Ticket Code: ${ticketCode}
+📅 Date: ${new Date(event.date).toLocaleDateString()}
+📍 Location: ${event.location}
+💰 Price: $${event.price}
+
+Keep your ticket code safe! Use /mytickets to view all your tickets.`
+}
+
+const handleBroadcastCommand = async (supabaseClient: any, message: string, botToken: string) => {
+  console.log('Processing broadcast command')
+  
+  if (!message.trim()) {
+    return 'Usage: /broadcast <your message>'
+  }
+
+  // Get all active chats
+  const { data: activeChats } = await supabaseClient
+    .from('telegram_chats')
+    .select('chat_id')
+    .eq('is_active', true)
+
+  if (!activeChats || activeChats.length === 0) {
+    return 'No active chats found for broadcasting.'
+  }
+
+  console.log(`Broadcasting to ${activeChats.length} chats`)
+  let successCount = 0
+  let failCount = 0
+
+  for (const chat of activeChats) {
+    try {
+      const broadcastResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chat.chat_id,
+          text: `📢 BROADCAST MESSAGE:\n\n${message}`
+        })
+      })
+
+      if (broadcastResponse.ok) {
+        successCount++
+      } else {
+        failCount++
+        console.log(`Failed to send to chat ${chat.chat_id}`)
+      }
+    } catch (error) {
+      failCount++
+      console.error(`Error sending to chat ${chat.chat_id}:`, error)
+    }
+  }
+
+  return `📢 Broadcast completed!\n✅ Sent to: ${successCount} chats\n❌ Failed: ${failCount} chats`
+}
+
+const sendTelegramMessage = async (botToken: string, chatId: number, text: string) => {
+  console.log('=== SENDING TELEGRAM RESPONSE ===')
+  console.log('Sending to chat:', chatId)
+  console.log('Message preview:', text.substring(0, 100) + '...')
+
+  const telegramApiUrl = `https://api.telegram.org/bot${botToken}/sendMessage`
+
+  const telegramPayload = {
+    chat_id: chatId,
+    text: text,
+  }
+
+  console.log('Making request to Telegram API...')
+  const telegramResponse = await fetch(telegramApiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(telegramPayload),
+  })
+
+  const telegramResponseData = await telegramResponse.json()
+  console.log('Telegram API response status:', telegramResponse.status)
+  console.log('Telegram API response:', telegramResponseData)
+  
+  if (!telegramResponse.ok || !telegramResponseData.ok) {
+    console.error('❌ Telegram API error:', telegramResponseData)
+    throw new Error(`Telegram API error (${telegramResponse.status}): ${JSON.stringify(telegramResponseData)}`)
+  }
+
+  console.log('✅ Message sent successfully')
+  return telegramResponseData
+}
+
 serve(async (req) => {
   console.log('=== NEW WEBHOOK REQUEST ===')
   console.log('Timestamp:', new Date().toISOString())
   console.log('Method:', req.method)
-  console.log('URL:', req.url)
 
   if (req.method === 'OPTIONS') {
     console.log('Handling CORS preflight request')
@@ -141,227 +396,44 @@ serve(async (req) => {
       console.log('✅ User information stored successfully')
     }
 
+    // Process commands dynamically
+    console.log('=== PROCESSING COMMAND ===')
     let responseText = ''
 
-    console.log('=== PROCESSING COMMAND ===')
     if (text.startsWith('/start')) {
       console.log('Processing /start command')
-      responseText = `🎫 Welcome to Event Tickets Bot!
-
-Available commands:
-/events - View available events
-/mytickets - View your tickets
-/broadcast - Send message to all users (admin only)
-/help - Show this help message
-
-Get started by checking out available events with /events`
+      responseText = handleStartCommand(user)
     } else if (text.startsWith('/events')) {
       console.log('Processing /events command')
-      const { data: events, error: eventsError } = await supabaseClient
-        .from('events')
-        .select('*')
-        .gt('available_tickets', 0)
-        .order('date', { ascending: true })
-
-      if (eventsError) {
-        console.error('❌ Events fetch error:', eventsError)
-        responseText = 'Error fetching events. Please try again.'
-      } else if (!events || events.length === 0) {
-        console.log('No events found')
-        responseText = 'No events available at the moment.'
-      } else {
-        console.log('Found events:', events.length)
-        responseText = '🎫 Available Events:\n\n'
-        events.forEach((event, index) => {
-          const eventDate = new Date(event.date).toLocaleDateString()
-          responseText += `${index + 1}. ${event.title}\n`
-          responseText += `📅 ${eventDate}\n`
-          responseText += `📍 ${event.location}\n`
-          responseText += `💰 $${event.price}\n`
-          responseText += `🎟️ ${event.available_tickets} tickets available\n`
-          responseText += `\nTo buy: /buy_${event.id}\n\n`
-        })
-      }
+      responseText = await handleEventsCommand(supabaseClient)
     } else if (text.startsWith('/buy_')) {
       console.log('Processing /buy command')
       const eventId = text.replace('/buy_', '')
-      
-      const { data: event } = await supabaseClient
-        .from('events')
-        .select('*')
-        .eq('id', eventId)
-        .single()
-
-      if (!event) {
-        responseText = 'Event not found.'
-      } else if (event.available_tickets <= 0) {
-        responseText = 'Sorry, this event is sold out.'
-      } else {
-        const ticketCode = Math.random().toString(36).substring(2, 15).toUpperCase()
-        
-        const { data: userData } = await supabaseClient
-          .from('telegram_users')
-          .select('id')
-          .eq('telegram_user_id', user.id)
-          .single()
-
-        const { error } = await supabaseClient
-          .from('tickets')
-          .insert({
-            user_id: userData?.id,
-            event_id: eventId,
-            ticket_code: ticketCode,
-            status: 'active'
-          })
-
-        if (error) {
-          console.error('❌ Ticket creation error:', error)
-          responseText = 'Error purchasing ticket. Please try again.'
-        } else {
-          await supabaseClient
-            .from('events')
-            .update({ available_tickets: event.available_tickets - 1 })
-            .eq('id', eventId)
-
-          responseText = `✅ Ticket purchased successfully!
-
-🎫 Event: ${event.title}
-🏷️ Ticket Code: ${ticketCode}
-📅 Date: ${new Date(event.date).toLocaleDateString()}
-📍 Location: ${event.location}
-💰 Price: $${event.price}
-
-Keep your ticket code safe! Use /mytickets to view all your tickets.`
-        }
-      }
+      responseText = await handleBuyCommand(supabaseClient, eventId, user.id)
     } else if (text.startsWith('/mytickets')) {
       console.log('Processing /mytickets command')
-      const { data: userData } = await supabaseClient
-        .from('telegram_users')
-        .select('id')
-        .eq('telegram_user_id', user.id)
-        .single()
-
-      const { data: tickets } = await supabaseClient
-        .from('tickets')
-        .select(`
-          *,
-          events (
-            title,
-            date,
-            location
-          )
-        `)
-        .eq('user_id', userData?.id)
-        .order('purchase_date', { ascending: false })
-
-      if (!tickets || tickets.length === 0) {
-        responseText = `🎫 You don't have any tickets yet.
-
-Use /events to browse available events and purchase tickets!`
-      } else {
-        responseText = '🎫 Your Tickets:\n\n'
-        tickets.forEach((ticket, index) => {
-          const event = ticket.events as any
-          responseText += `${index + 1}. ${event.title}\n`
-          responseText += `🏷️ Code: ${ticket.ticket_code}\n`
-          responseText += `📅 ${new Date(event.date).toLocaleDateString()}\n`
-          responseText += `📍 ${event.location}\n`
-          responseText += `📊 Status: ${ticket.status}\n\n`
-        })
-      }
+      responseText = await handleMyTicketsCommand(supabaseClient, user.id)
     } else if (text.startsWith('/broadcast ')) {
       console.log('Processing /broadcast command')
       const broadcastMessage = text.replace('/broadcast ', '')
-      
-      if (broadcastMessage.trim()) {
-        // Get all active chats
-        const { data: activeChats } = await supabaseClient
-          .from('telegram_chats')
-          .select('chat_id')
-          .eq('is_active', true)
-
-        if (activeChats && activeChats.length > 0) {
-          console.log(`Broadcasting to ${activeChats.length} chats`)
-          let successCount = 0
-          let failCount = 0
-
-          for (const chat of activeChats) {
-            try {
-              const broadcastResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: chat.chat_id,
-                  text: `📢 BROADCAST MESSAGE:\n\n${broadcastMessage}`
-                })
-              })
-
-              if (broadcastResponse.ok) {
-                successCount++
-              } else {
-                failCount++
-                console.log(`Failed to send to chat ${chat.chat_id}`)
-              }
-            } catch (error) {
-              failCount++
-              console.error(`Error sending to chat ${chat.chat_id}:`, error)
-            }
-          }
-
-          responseText = `📢 Broadcast completed!\n✅ Sent to: ${successCount} chats\n❌ Failed: ${failCount} chats`
-        } else {
-          responseText = 'No active chats found for broadcasting.'
-        }
-      } else {
-        responseText = 'Usage: /broadcast <your message>'
-      }
+      responseText = await handleBroadcastCommand(supabaseClient, broadcastMessage, botToken)
     } else if (text.startsWith('/help')) {
-      responseText = `🎫 Event Tickets Bot Help
-
-Available commands:
-/start - Welcome message
-/events - View all available events
-/mytickets - View your purchased tickets
-/broadcast <message> - Send message to all users
-/help - Show this help message
-
-To purchase a ticket:
-1. Use /events to see available events
-2. Copy the /buy_[event_id] command for the event you want
-3. Send that command to purchase your ticket`
+      console.log('Processing /help command')
+      responseText = handleHelpCommand()
     } else {
-      responseText = `❓ Unknown command. Use /help to see available commands.`
+      console.log('Unknown command:', text)
+      responseText = `❓ Unknown command: "${text}"\n\nUse /help to see available commands.`
     }
 
     // Send response to the current chat
-    console.log('=== SENDING TELEGRAM RESPONSE ===')
-    const telegramApiUrl = `https://api.telegram.org/bot${botToken}/sendMessage`
+    await sendTelegramMessage(botToken, chatId, responseText)
 
-    const telegramPayload = {
-      chat_id: chatId,
-      text: responseText,
-    }
-
-    const telegramResponse = await fetch(telegramApiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(telegramPayload),
-    })
-
-    const telegramResponseData = await telegramResponse.json()
-    
-    if (!telegramResponse.ok || !telegramResponseData.ok) {
-      console.error('❌ Telegram API error:', telegramResponseData)
-      throw new Error(`Telegram API error: ${JSON.stringify(telegramResponseData)}`)
-    }
-
-    console.log('✅ Message sent successfully')
     return new Response('OK', { status: 200, headers: corsHeaders })
 
   } catch (error) {
     console.error('=== CRITICAL ERROR ===')
     console.error('Error:', error.message)
+    console.error('Stack:', error.stack)
     
     return new Response(JSON.stringify({ 
       error: 'Internal server error',
