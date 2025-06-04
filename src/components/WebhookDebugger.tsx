@@ -15,23 +15,23 @@ const WebhookDebugger = () => {
 
   const fetchAvailableChats = async () => {
     try {
-      const { data: chats, error } = await supabase
-        .from('telegram_chats')
-        .select('chat_id, username, first_name, last_name')
-        .eq('is_active', true)
+      // Use telegram_users table since telegram_chats might not be in the types yet
+      const { data: users, error } = await supabase
+        .from('telegram_users')
+        .select('telegram_user_id, username, first_name, last_name')
         .order('updated_at', { ascending: false });
 
       if (error) {
-        console.error('Error fetching chats:', error);
+        console.error('Error fetching users:', error);
         return;
       }
 
-      setAvailableChats(chats || []);
-      if (chats && chats.length > 0 && !selectedChatId) {
-        setSelectedChatId(chats[0].chat_id.toString());
+      setAvailableChats(users || []);
+      if (users && users.length > 0 && !selectedChatId) {
+        setSelectedChatId(users[0].telegram_user_id.toString());
       }
     } catch (error) {
-      console.error('Error fetching chats:', error);
+      console.error('Error fetching users:', error);
     }
   };
 
@@ -174,9 +174,9 @@ const WebhookDebugger = () => {
               onChange={(e) => setSelectedChatId(e.target.value)}
               className="w-full p-2 border rounded text-sm"
             >
-              {availableChats.map((chat) => (
-                <option key={chat.chat_id} value={chat.chat_id}>
-                  {chat.first_name} {chat.last_name} (@{chat.username || 'no username'}) - ID: {chat.chat_id}
+              {availableChats.map((user) => (
+                <option key={user.telegram_user_id} value={user.telegram_user_id}>
+                  {user.first_name} {user.last_name} (@{user.username || 'no username'}) - ID: {user.telegram_user_id}
                 </option>
               ))}
             </select>
