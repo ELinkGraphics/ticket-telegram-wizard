@@ -300,25 +300,47 @@ const setWebhook = async (botToken: string, webhookUrl: string) => {
 }
 
 const activateBot = async (botToken: string) => {
-  // Try to get updates to activate the bot
-  const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      limit: 1,
-      timeout: 0
+  console.log('Attempting to activate bot...')
+  
+  try {
+    // First, delete any existing webhook to avoid conflicts
+    console.log('Deleting existing webhook...')
+    const deleteResponse = await fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook`, {
+      method: 'POST'
     })
-  })
-  
-  const result = await response.json()
-  
-  if (result.ok) {
-    // Also try to delete webhook and set it again to ensure proper activation
-    await fetch(`https://api.telegram.org/bot${botToken}/deleteWebhook`)
-    return { ok: true, description: 'Bot activation attempted' }
+    
+    const deleteResult = await deleteResponse.json()
+    console.log('Delete webhook result:', deleteResult)
+    
+    // Wait a moment for the webhook deletion to take effect
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    
+    // Try to get updates to activate the bot
+    console.log('Getting updates to activate bot...')
+    const updatesResponse = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        limit: 1,
+        timeout: 0
+      })
+    })
+    
+    const updatesResult = await updatesResponse.json()
+    console.log('Get updates result:', updatesResult)
+    
+    if (updatesResult.ok) {
+      console.log('Bot activation successful')
+      return { ok: true, description: 'Bot activated successfully' }
+    } else {
+      console.error('Bot activation failed:', updatesResult)
+      return { ok: false, description: updatesResult.description || 'Failed to activate bot' }
+    }
+    
+  } catch (error) {
+    console.error('Error during bot activation:', error)
+    return { ok: false, description: error.message || 'Unknown error during activation' }
   }
-  
-  return result
 }
 
 serve(async (req) => {
