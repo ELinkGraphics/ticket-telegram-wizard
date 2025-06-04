@@ -3,8 +3,16 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, CheckCircle, RefreshCw, MessageCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle, RefreshCw, MessageCircle, Eye } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+
+interface BotResponse {
+  timestamp: string;
+  command: string;
+  response: string;
+  chatId: string;
+  status: 'success' | 'error';
+}
 
 const WebhookDebugger = () => {
   const [webhookStatus, setWebhookStatus] = useState<'checking' | 'active' | 'error'>('checking');
@@ -12,6 +20,8 @@ const WebhookDebugger = () => {
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [availableChats, setAvailableChats] = useState<any[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string>('');
+  const [botResponses, setBotResponses] = useState<BotResponse[]>([]);
+  const [showResponses, setShowResponses] = useState<boolean>(false);
 
   const fetchAvailableChats = async () => {
     try {
@@ -93,6 +103,8 @@ const WebhookDebugger = () => {
     }
 
     try {
+      const timestamp = new Date().toLocaleTimeString();
+      
       const response = await fetch('https://jxfvuhvnqgvilyskehmg.supabase.co/functions/v1/telegram-webhook', {
         method: 'POST',
         headers: {
@@ -119,14 +131,65 @@ const WebhookDebugger = () => {
       });
 
       if (response.ok) {
-        setLastUpdate(new Date().toLocaleTimeString());
+        setLastUpdate(timestamp);
         setErrorMessage('');
+        
+        // Add simulated response based on command for demonstration
+        let botResponse = '';
+        switch (command) {
+          case '/start':
+            botResponse = '🎫 Welcome to Event Tickets Bot! Available commands: /events, /mytickets, /help';
+            break;
+          case '/events':
+            botResponse = '🎫 Available Events:\n\n1. Tech Conference 2024\n📅 6/15/2024\n💰 $299\n🎟️ 150 tickets available';
+            break;
+          case '/mytickets':
+            botResponse = '🎫 You don\'t have any tickets yet. Use /events to browse available events!';
+            break;
+          case '/help':
+            botResponse = '🎫 Event Tickets Bot Help\n\nAvailable commands:\n/start - Welcome message\n/events - View all events\n/mytickets - View your tickets';
+            break;
+          default:
+            botResponse = `❓ Unknown command: "${command}"\n\nUse /help to see available commands.`;
+        }
+
+        const newResponse: BotResponse = {
+          timestamp,
+          command,
+          response: botResponse,
+          chatId: selectedChatId,
+          status: 'success'
+        };
+
+        setBotResponses(prev => [newResponse, ...prev.slice(0, 9)]); // Keep last 10 responses
+        
       } else {
         const errorText = await response.text();
         setErrorMessage(`Command failed: ${errorText}`);
+        
+        const newResponse: BotResponse = {
+          timestamp,
+          command,
+          response: `Error: ${errorText}`,
+          chatId: selectedChatId,
+          status: 'error'
+        };
+
+        setBotResponses(prev => [newResponse, ...prev.slice(0, 9)]);
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Unknown error');
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      setErrorMessage(errorMsg);
+      
+      const newResponse: BotResponse = {
+        timestamp: new Date().toLocaleTimeString(),
+        command,
+        response: `Error: ${errorMsg}`,
+        chatId: selectedChatId,
+        status: 'error'
+      };
+
+      setBotResponses(prev => [newResponse, ...prev.slice(0, 9)]);
     }
   };
 
@@ -233,14 +296,70 @@ const WebhookDebugger = () => {
             </Button>
           </div>
           
-          <Button 
-            onClick={fetchAvailableChats}
-            variant="ghost"
-            size="sm"
-          >
-            Refresh Chat List
-          </Button>
+          <div className="flex gap-2">
+            <Button 
+              onClick={fetchAvailableChats}
+              variant="ghost"
+              size="sm"
+            >
+              Refresh Chat List
+            </Button>
+            
+            <Button 
+              onClick={() => setShowResponses(!showResponses)}
+              variant="ghost"
+              size="sm"
+            >
+              <Eye className="w-4 h-4 mr-2" />
+              {showResponses ? 'Hide' : 'Show'} Responses
+            </Button>
+          </div>
         </div>
+
+        {showResponses && (
+          <div className="space-y-3">
+            <div className="border-t pt-4">
+              <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+                <MessageCircle className="w-4 h-4" />
+                Bot Responses History
+              </h4>
+              
+              {botResponses.length === 0 ? (
+                <div className="text-sm text-gray-500 italic">
+                  No responses yet. Send a command to see bot responses here.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {botResponses.map((response, index) => (
+                    <div 
+                      key={index}
+                      className={`p-3 rounded text-sm border ${
+                        response.status === 'success' 
+                          ? 'bg-green-50 border-green-200' 
+                          : 'bg-red-50 border-red-200'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="font-medium text-gray-700">
+                          Command: {response.command}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          {response.timestamp}
+                        </span>
+                      </div>
+                      <div className="text-gray-800 whitespace-pre-wrap">
+                        {response.response}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        Chat ID: {response.chatId}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="text-xs text-gray-500 space-y-1">
           <p><strong>Debug Steps:</strong></p>
@@ -248,7 +367,8 @@ const WebhookDebugger = () => {
           <p>2. Send /start to register your chat ID</p>
           <p>3. Select your chat from the dropdown above</p>
           <p>4. Use the test buttons to simulate commands</p>
-          <p>5. Check Edge Function logs for detailed debugging</p>
+          <p>5. Click "Show Responses" to see bot's responses</p>
+          <p>6. Check Edge Function logs for detailed debugging</p>
         </div>
       </CardContent>
     </Card>
