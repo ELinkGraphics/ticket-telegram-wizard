@@ -33,11 +33,6 @@ interface TelegramUser {
   username?: string
 }
 
-interface TelegramChat {
-  id: number
-  type: string
-}
-
 // Command handlers
 const handleStartCommand = (user: TelegramUser) => {
   return `🎫 Welcome to Event Tickets Bot, ${user.first_name}!
@@ -210,27 +205,26 @@ const handleBroadcastCommand = async (supabaseClient: any, message: string, botT
     return 'Usage: /broadcast <your message>'
   }
 
-  // Get all active chats
-  const { data: activeChats } = await supabaseClient
-    .from('telegram_chats')
-    .select('chat_id')
-    .eq('is_active', true)
+  // Get all unique chat IDs from telegram_users
+  const { data: users } = await supabaseClient
+    .from('telegram_users')
+    .select('telegram_user_id')
 
-  if (!activeChats || activeChats.length === 0) {
-    return 'No active chats found for broadcasting.'
+  if (!users || users.length === 0) {
+    return 'No users found for broadcasting.'
   }
 
-  console.log(`Broadcasting to ${activeChats.length} chats`)
+  console.log(`Broadcasting to ${users.length} users`)
   let successCount = 0
   let failCount = 0
 
-  for (const chat of activeChats) {
+  for (const user of users) {
     try {
       const broadcastResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          chat_id: chat.chat_id,
+          chat_id: user.telegram_user_id,
           text: `📢 BROADCAST MESSAGE:\n\n${message}`
         })
       })
@@ -239,15 +233,15 @@ const handleBroadcastCommand = async (supabaseClient: any, message: string, botT
         successCount++
       } else {
         failCount++
-        console.log(`Failed to send to chat ${chat.chat_id}`)
+        console.log(`Failed to send to user ${user.telegram_user_id}`)
       }
     } catch (error) {
       failCount++
-      console.error(`Error sending to chat ${chat.chat_id}:`, error)
+      console.error(`Error sending to user ${user.telegram_user_id}:`, error)
     }
   }
 
-  return `📢 Broadcast completed!\n✅ Sent to: ${successCount} chats\n❌ Failed: ${failCount} chats`
+  return `📢 Broadcast completed!\n✅ Sent to: ${successCount} users\n❌ Failed: ${failCount} users`
 }
 
 const sendTelegramMessage = async (botToken: string, chatId: number, text: string) => {
@@ -280,6 +274,30 @@ const sendTelegramMessage = async (botToken: string, chatId: number, text: strin
 
   console.log('✅ Message sent successfully')
   return telegramResponseData
+}
+
+// New webhook management functions
+const getBotInfo = async (botToken: string) => {
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/getMe`)
+  return await response.json()
+}
+
+const getWebhookInfo = async (botToken: string) => {
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/getWebhookInfo`)
+  return await response.json()
+}
+
+const setWebhook = async (botToken: string, webhookUrl: string) => {
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: webhookUrl,
+      allowed_updates: ['message'],
+      drop_pending_updates: true
+    })
+  })
+  return await response.json()
 }
 
 serve(async (req) => {
@@ -325,14 +343,81 @@ serve(async (req) => {
       return new Response('Empty request body', { status: 400, headers: corsHeaders })
     }
 
-    let update: TelegramUpdate
+    let requestData: any
     try {
-      update = JSON.parse(requestText)
-      console.log('✅ Successfully parsed JSON update')
+      requestData = JSON.parse(requestText)
+      console.log('✅ Successfully parsed JSON request')
     } catch (parseError) {
       console.error('❌ JSON parsing error:', parseError)
       return new Response('Invalid JSON', { status: 400, headers: corsHeaders })
     }
+
+    // Handle webhook management requests
+    if (requestData.action) {
+      console.log('=== WEBHOOK MANAGEMENT REQUEST ===')
+      console.log('Action:', requestData.action)
+      
+      try {
+        if (requestData.action === 'check_bot_info') {
+          const botInfo = await getBotInfo(botToken)
+          const webhookInfo = await getWebhookInfo(botToken)
+          
+          if (botInfo.ok) {
+            return new Response(JSON.stringify({
+              success: true,
+              bot_info: botInfo.result,
+              webhook_configured: !!webhookInfo.result?.url,
+              webhook_info: webhookInfo.result
+            }), {
+              status: 200,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            })
+          } else {
+            return new Response(JSON.stringify({
+              success: false,
+              error: botInfo.description || 'Failed to get bot info'
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            })
+          }
+        }
+        
+        if (requestData.action === 'set_webhook') {
+          const result = await setWebhook(botToken, requestData.webhook_url)
+          
+          if (result.ok) {
+            return new Response(JSON.stringify({
+              success: true,
+              message: 'Webhook configured successfully'
+            }), {
+              status: 200,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            })
+          } else {
+            return new Response(JSON.stringify({
+              success: false,
+              error: result.description || 'Failed to set webhook'
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            })
+          }
+        }
+      } catch (error) {
+        console.error('❌ Webhook management error:', error)
+        return new Response(JSON.stringify({
+          success: false,
+          error: error.message || 'Unknown error'
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        })
+      }
+    }
+
+    // Handle regular Telegram updates
+    const update: TelegramUpdate = requestData
     
     if (!update.message) {
       console.log('ℹ️ No message in update, skipping')
@@ -354,28 +439,6 @@ serve(async (req) => {
     console.log('Chat type:', message.chat.type)
     console.log('Message text:', text)
     console.log('User:', user.first_name, user.username)
-
-    // Store/update chat information in database
-    console.log('=== STORING CHAT INFORMATION ===')
-    const { error: chatError } = await supabaseClient
-      .from('telegram_chats')
-      .upsert({
-        chat_id: chatId,
-        chat_type: message.chat.type,
-        username: user.username || null,
-        first_name: user.first_name,
-        last_name: user.last_name || null,
-        is_active: true,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'chat_id'
-      })
-
-    if (chatError) {
-      console.error('❌ Chat storage error:', chatError)
-    } else {
-      console.log('✅ Chat information stored/updated successfully')
-    }
 
     // Store/update user information
     console.log('=== STORING USER INFORMATION ===')
